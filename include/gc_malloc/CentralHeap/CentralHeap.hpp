@@ -1,44 +1,39 @@
 #pragma once
 
 #include <cstddef>
-#include "ShmFreeChunkList.hpp"
-#include "ShmChunkAllocator.hpp"
-#include "ShareMemory/ShmHeader.hpp"
-#include "Tool/ShmMutexLock.hpp"
 #include <mutex>
 
-
-class ShmChunkAllocator;
-class ShmFreeChunkList;
+// 引入你之前确认不需要修改的那两个头文件
+#include "AlignedChunkAllocatorByMmap.hpp"
+#include "FreeChunkListCache.hpp"
 
 class CentralHeap {
 public:
-    static CentralHeap& GetInstance(void* shm_base, size_t total_bytes);
+    // 1. 单例获取方式修改：
+    // 不再需要 shm_base 和 size，因为是向操作系统动态申请，不是固定区域
+    static CentralHeap& GetInstance();
 
+    // 2. 核心接口
     void* acquireChunk(size_t size);
     void releaseChunk(void* chunk, size_t size);
 
+    // 禁用拷贝和移动
     CentralHeap(const CentralHeap&) = delete;
     CentralHeap& operator=(const CentralHeap&) = delete;
     CentralHeap(CentralHeap&&) = delete;
     CentralHeap& operator=(CentralHeap&&) = delete;
 
 public:
-    static constexpr size_t kChunkSize = 2 * 1024 *1024;
+    static constexpr size_t kChunkSize = 2 * 1024 * 1024; // 2MB
 
 private:
-    CentralHeap(void* shm_base, size_t region_bytes);
-    ~CentralHeap() = delete; 
+    CentralHeap() = default;
+    ~CentralHeap() = default;
 
-    bool refillCacheNolock(); 
-
-    ShmChunkAllocator shm_alloc_;
-    ShmFreeChunkList shm_free_list_;
-
-    size_t self_off_{0};
-
-    static constexpr size_t kTargetWatermarkInChunks = 8;
-    mutable ShmMutexLock shm_mutex_; 
-    // mutable std::mutex shm_mutex_;
+    // 3. 成员变量替换：
+    // 负责向 OS 申请大块内存
+    AlignedChunkAllocatorByMmap allocator_;
+    
+    // 负责管理回收回来的空闲块 (Thread-Safe)
+    FreeChunkListCache free_list_;
 };
-

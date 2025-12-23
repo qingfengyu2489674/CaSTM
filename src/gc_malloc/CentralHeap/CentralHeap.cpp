@@ -1,122 +1,55 @@
 #include "gc_malloc/CentralHeap/CentralHeap.hpp"
-
-#include "gc_malloc/CentralHeap/ShmChunkAllocator.hpp"
-#include "gc_malloc/CentralHeap/ShmFreeChunkList.hpp"
-
-#include "ShareMemory/ShmHeader.hpp" 
-
-#include <new>
-#include <type_traits>
 #include <cassert>
 #include <iostream>
-#include <thread>
 
-static inline std::size_t align_up(std::size_t x, std::size_t a) {
-    return (x + (a - 1)) & ~(a - 1);
+// -----------------------------------------------------------------------------
+// 1. 单例实现
+// -----------------------------------------------------------------------------
+CentralHeap& CentralHeap::GetInstance() {
+    // C++11 保证静态局部变量的初始化是线程安全的
+    // 不需要再手动写原子锁或 CAS 逻辑
+    static CentralHeap instance;
+    return instance;
 }
 
 // -----------------------------------------------------------------------------
-// 1. CentralHeap 的构造/析构函数和单例实现
-// -----------------------------------------------------------------------------
-
-// 假设 ShmHeader 里：std::atomic<int> state;
-// enum { kUninit=0, kInit=1, kReady=2 };
-
-CentralHeap& CentralHeap::GetInstance(void* shm_base, size_t total_bytes) {
-    auto* base = reinterpret_cast<unsigned char*>(shm_base);
-    auto* H = reinterpret_cast<ShmHeader*>(base);
-
-    ShmState  expected = ShmState::kUninit;
-    if (H->app_state.compare_exchange_strong(
-            expected, ShmState::kInitializing,
-            std::memory_order_acq_rel,   // 成功：acq_rel，拿到初始化权
-            std::memory_order_acquire))  // 失败：acquire，读取别人发布的结果
-    {
-        // —— 我是“唯一的初始化者” ——
-        uint64_t off_heap = H->heap_offset;
-        const size_t off_data = align_up(off_heap + sizeof(CentralHeap), 64);
-
-        assert(H->total_size > off_data);
-        size_t region_bytes = H->total_size - off_data;
-
-        void* heap_addr = base + off_heap;
-        void* data_base = base + off_data;
-
-        new (heap_addr) CentralHeap(data_base, region_bytes);
-        reinterpret_cast<CentralHeap*>(heap_addr)->self_off_ = off_heap;
-
-        // 发布“就绪”
-        H->app_state.store(ShmState::kReady, std::memory_order_release);
-    } else {
-        // —— 我不是初始化者：等待初始化完成 ——
-        // 若出现短窗口看到的不是 kReady，就自旋等待；必要时 sleep/backoff
-        while (H->app_state.load(std::memory_order_acquire) != ShmState::kReady) {
-             // 简单的 yield，生产环境建议加 pause 指令
-             std::this_thread::yield();
-        }
-    }
-
-    return *reinterpret_cast<CentralHeap*>(base + H->heap_offset);
-}
-
-
-CentralHeap::CentralHeap(void* shm_base, std::size_t region_bytes)
-    : shm_alloc_(shm_base, region_bytes),
-      shm_free_list_() {
-}
-
-
-// -----------------------------------------------------------------------------
-// 2. CentralHeap 的核心逻辑实现
-// -----------------------------------------------------------------------------
-
-// -----------------------------------------------------------------------------
-// CentralHeap 核心逻辑实现
+// 2. 核心逻辑实现
 // -----------------------------------------------------------------------------
 
 void* CentralHeap::acquireChunk(size_t size) {
+    // 校验大小
     assert(size == kChunkSize);
 
-    // 显式锁定
-    std::lock_guard<ShmMutexLock> lock(shm_mutex_);
-
-    void* chunk = shm_free_list_.acquire();
+    // 步骤 A: 优先从空闲链表(缓存)中获取
+    // FreeChunkListCache 内部已经有 mutex 锁，所以这里不需要再加锁
+    void* chunk = free_list_.acquire();
+    
     if (chunk != nullptr) { 
         return chunk;
     }
 
-    bool refill_ok = refillCacheNolock();
-    if (!refill_ok) {
-        std::cerr << "[CentralHeap::AcquireChunk] WARNING: Failed to refill cache. "
-                  << "System might be out of memory." << std::endl;
-    }
+    // 步骤 B: 如果缓存里没有，直接向操作系统(内核)申请
+    // AlignedChunkAllocatorByMmap 使用 mmap，也是线程安全的（除非含状态）
+    // 通常 mmap 系统调用本身就是原子的
+    chunk = allocator_.allocate(size);
 
-    chunk = shm_free_list_.acquire();
+    if (chunk == nullptr) {
+        std::cerr << "[CentralHeap::acquireChunk] FATAL: mmap failed (OOM)." << std::endl;
+    }
 
     return chunk;
 }
 
-bool CentralHeap::refillCacheNolock() {
-    if (shm_free_list_.getCacheCount() > 0) {
-        return true;
-    }
-
-    while (shm_free_list_.getCacheCount() <= kTargetWatermarkInChunks) {
-        void* chunk = shm_alloc_.allocate(kChunkSize);
-        if (!chunk) {
-            return false;
-        }
-        shm_free_list_.deposit(chunk);
-    }
-
-    return true;
-}
-
 void CentralHeap::releaseChunk(void* chunk, size_t size) {
+    if (chunk == nullptr) return;
+    
     assert(size == kChunkSize);
 
-    // 显式锁定
-    std::lock_guard<ShmMutexLock> lock(shm_mutex_);
+    // 将使用完的内存块归还到空闲链表
+    // FreeChunkListCache 内部会自动加锁
+    free_list_.deposit(chunk);
 
-    shm_free_list_.deposit(chunk);
+    // 注意：目前的策略是“只借不还给OS”，归还的内存会留在 free_list_ 中供下次使用。
+    // 如果希望内存紧张时归还给 OS，可以在这里判断 free_list_.getCacheCount() 的大小，
+    // 如果超过某个阈值，则调用 allocator_.deallocate(chunk, size) 并跳过 deposit。
 }

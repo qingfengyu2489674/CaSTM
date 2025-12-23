@@ -7,7 +7,6 @@
 #include "gc_malloc/CentralHeap/CentralHeap.hpp"
 #include "gc_malloc/ThreadHeap/MemSubPool.hpp"
 #include "gc_malloc/ThreadHeap/ThreadHeap.hpp"
-#include "gc_malloc/ThreadHeap/ProcessAllocatorContext.hpp"
 
 
 // -------------------- 对外公共接口 --------------------
@@ -56,14 +55,18 @@ ThreadHeap& ThreadHeap::local() noexcept {
 }
 
 ThreadHeap::ThreadHeap() noexcept 
-    : CentralHeap_ref_(*ProcessAllocatorContext::getCentralHeap())
+    : CentralHeap_ref_(CentralHeap::GetInstance()) 
 {
+    static_assert(SizeClassConfig::kChunkSizeBytes == CentralHeap::kChunkSize, "Chunk sizes must match");
+    
     for (std::size_t i = 0; i < k_class_count; ++i) {
         const std::size_t bs = SizeClassConfig::ClassToSize(i);
         void* slot = static_cast<void*>(&managers_storage_[i]);
+        
+        // Placement new 初始化 Manager
         new (slot) SizeClassPoolManager(bs);
 
-        // 回调 ctx 传回自身存储地址，回调里用 at(*ptr) 还原引用
+        // 设置回调
         at(managers_storage_[i]).setRefillCallback(&ThreadHeap::refillFromCentral_cb, /*ctx=*/&managers_storage_[i]);
         at(managers_storage_[i]).setReturnCallback(&ThreadHeap::returnToCentral_cb,   /*ctx=*/&managers_storage_[i]);
     }
