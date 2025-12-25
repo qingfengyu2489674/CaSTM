@@ -1,137 +1,155 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
-#include <cstdint>
-#include <cstring>
+#include <atomic>
+#include <cstring> // for memset
 
-// 引入你的头文件
-#include "gc_malloc/CentralHeap/CentralHeap.hpp"
+// 引入被测模块
+#include "TierAlloc/CentralHeap/CentralHeap.hpp"
+#include "TierAlloc/common/GlobalConfig.hpp"
 
-// 定义一个测试类，虽然 CentralHeap 是单例，但用 Fixture 可以方便扩展
 class CentralHeapTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        // 每个测试开始前的准备工作 (如果有)
-    }
+    // 便捷访问单例
+    CentralHeap& heap = CentralHeap::GetInstance();
 
-    void TearDown() override {
-        // 每个测试结束后的清理工作
+    // 辅助检查对齐
+    bool IsAligned(void* ptr, size_t alignment) {
+        return (reinterpret_cast<uintptr_t>(ptr) & (alignment - 1)) == 0;
     }
-
-    // 获取单例引用
-    CentralHeap& GetHeap() {
-        return CentralHeap::GetInstance();
-    }
-
-    const size_t kChunkSize = CentralHeap::kChunkSize;
 };
 
-// 1. 测试基本的分配功能
-TEST_F(CentralHeapTest, BasicAllocation) {
-    CentralHeap& heap = GetHeap();
+// 1. 基础功能测试：申请、对齐检查、读写验证
+TEST_F(CentralHeapTest, BasicAllocationAndAlignment) {
+    void* ptr = heap.fetchChunk();
     
-    void* ptr = heap.acquireChunk(kChunkSize);
-    
-    // 断言：指针不为空
-    ASSERT_NE(ptr, nullptr) << "Failed to allocate chunk from CentralHeap";
+    // 必须分配成功
+    ASSERT_NE(ptr, nullptr) << "SystemAllocator failed to allocate memory.";
 
-    // 断言：内存可写 (防止拿到只读内存或无效地址)
-    // 写入一些数据测试
-    std::memset(ptr, 0xAB, 1024); 
-    unsigned char* byte_ptr = static_cast<unsigned char*>(ptr);
-    EXPECT_EQ(byte_ptr[0], 0xAB);
-    EXPECT_EQ(byte_ptr[1023], 0xAB);
+    // 必须严格 2MB 对齐
+    EXPECT_TRUE(IsAligned(ptr, kChunkSize)) 
+        << "Ptr " << ptr << " is not aligned to " << kChunkSize;
 
-    // 释放内存
-    heap.releaseChunk(ptr, kChunkSize);
+    // 验证内存可写 (不仅是地址有效，物理页必须可用)
+    // 写入 Chunk 头部和尾部
+    char* byte_ptr = static_cast<char*>(ptr);
+    byte_ptr[0] = 0xAA;
+    byte_ptr[kChunkSize - 1] = 0xBB;
+
+    EXPECT_EQ(static_cast<unsigned char>(byte_ptr[0]), 0xAA);
+    EXPECT_EQ(static_cast<unsigned char>(byte_ptr[kChunkSize - 1]), 0xBB);
+
+    // 归还
+    heap.returnChunk(ptr);
 }
 
-// 2. 测试内存对齐 (AlignedChunkAllocatorByMmap 的核心功能)
-TEST_F(CentralHeapTest, AlignmentCheck) {
-    CentralHeap& heap = GetHeap();
+// 2. 缓存逻辑测试：验证 LIFO 和 计数器变化
+TEST_F(CentralHeapTest, CacheCounterBehavior) {
+    size_t initial_count = heap.getFreeChunkCount();
+
+    // 申请一个
+    void* ptr1 = heap.fetchChunk();
+    size_t count_after_alloc = heap.getFreeChunkCount();
+
+    // 预期：如果缓存原本非空，数量-1；如果原本为空，数量不变(直接找OS要的)
+    if (initial_count > 0) {
+        EXPECT_EQ(count_after_alloc, initial_count - 1);
+    } else {
+        EXPECT_EQ(count_after_alloc, 0);
+    }
+
+    // 归还一个
+    heap.returnChunk(ptr1);
+    size_t count_after_free = heap.getFreeChunkCount();
+
+    // 预期：归还后，缓存数量应该+1 (除非触发了水位线，但在单测初期不太可能)
+    EXPECT_EQ(count_after_free, count_after_alloc + 1);
+
+    // 再次申请 (验证 LIFO 复用)
+    void* ptr2 = heap.fetchChunk();
+    // 理论上，刚还回去的 ptr1 应该立即被拿出来 (LIFO)
+    // 注意：这不是硬性 API 契约，但在当前实现下应该成立
+    EXPECT_EQ(ptr1, ptr2) << "Heap should prioritize the most recently returned chunk (LIFO).";
     
-    void* ptr = heap.acquireChunk(kChunkSize);
-    ASSERT_NE(ptr, nullptr);
-
-    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-    size_t alignment = 2 * 1024 * 1024; // 2MB
-
-    // 检查地址能否被 2MB 整除
-    EXPECT_EQ(addr % alignment, 0) 
-        << "Pointer " << std::hex << addr << " is not aligned to 2MB";
-
-    heap.releaseChunk(ptr, kChunkSize);
+    // 清理现场
+    heap.returnChunk(ptr2);
 }
 
-// 3. 测试缓存复用机制 (LIFO - 后进先出)
-// 假如我申请了 A，释放 A，再申请 B，B 应该等于 A (因为 A 在缓存链表头)
-TEST_F(CentralHeapTest, CacheReuse) {
-    CentralHeap& heap = GetHeap();
-
-    // 1. 申请第一个块
-    void* ptr1 = heap.acquireChunk(kChunkSize);
-    ASSERT_NE(ptr1, nullptr);
-
-    // 2. 释放它
-    heap.releaseChunk(ptr1, kChunkSize);
-
-    // 3. 再次申请
-    void* ptr2 = heap.acquireChunk(kChunkSize);
+// 3. 水位控制测试：验证超过阈值后是否真正 munmap
+TEST_F(CentralHeapTest, WaterLevelControl) {
+    // 这里的 kMaxCentralCacheSize 需要在 GlobalConfig.hpp 中可见
+    // 假设是 512 (1GB)
+    const size_t kLimit = kMaxCentralCacheSize;
     
-    // 断言：应该拿到同一块内存 (验证 FreeChunkListCache 是否工作)
-    EXPECT_EQ(ptr1, ptr2) 
-        << "CentralHeap did not reuse the recently released chunk";
+    std::vector<void*> chunks;
+    
+    // 1. 先把缓存填满 (甚至稍微溢出一点)
+    // 为了防止原本里面就有东西，我们只负责 "push" 足够多的数量
+    // 但不能凭空 push，必须先 fetch 出来再 return。
+    
+    // 申请 数量 = Limit + 5
+    for (size_t i = 0; i < kLimit + 5; ++i) {
+        chunks.push_back(heap.fetchChunk());
+    }
 
-    heap.releaseChunk(ptr2, kChunkSize);
+    // 2. 全部归还
+    for (void* p : chunks) {
+        heap.returnChunk(p);
+    }
+
+    // 3. 验证
+    size_t current_count = heap.getFreeChunkCount();
+    
+    // 缓存数量不应该超过最大水位线
+    EXPECT_LE(current_count, kLimit) 
+        << "CentralHeap holding more chunks than kMaxCentralCacheSize limit!";
+        
+    // 实际上，如果测试开始前缓存是空的，现在应该是 kLimit
+    // 溢出的那 5 个应该被 munmap 掉了
 }
 
-// 4. 测试多个块的分配
-TEST_F(CentralHeapTest, MultipleAllocations) {
-    CentralHeap& heap = GetHeap();
+// 4. 并发压力测试：死锁检测 (Deadlock Detection)
+TEST_F(CentralHeapTest, MultiThreadedStressTest) {
+    const int kThreadCount = 8;
+    const int kOpsPerThread = 1000;
     
-    void* ptr1 = heap.acquireChunk(kChunkSize);
-    void* ptr2 = heap.acquireChunk(kChunkSize);
+    std::atomic<int> success_count{0};
+    std::vector<std::thread> threads;
 
-    ASSERT_NE(ptr1, nullptr);
-    ASSERT_NE(ptr2, nullptr);
-    EXPECT_NE(ptr1, ptr2) << "Two allocations returned the same address without release";
-
-    heap.releaseChunk(ptr1, kChunkSize);
-    heap.releaseChunk(ptr2, kChunkSize);
-}
-
-// 5. 并发压力测试 (验证线程安全)
-TEST_F(CentralHeapTest, ConcurrencyTest) {
-    CentralHeap& heap = GetHeap();
-    const int thread_count = 8;     // 8个线程
-    const int iterations = 100;     // 每个线程跑100次分配释放
-
-    auto worker_task = [&heap, this]() {
-        for (int i = 0; i < iterations; ++i) {
-            void* ptr = heap.acquireChunk(kChunkSize);
+    auto thread_func = [&]() {
+        for (int i = 0; i < kOpsPerThread; ++i) {
+            // 1. 申请
+            void* p = CentralHeap::GetInstance().fetchChunk();
             
-            // 简单校验
-            if (ptr != nullptr) {
-                // 模拟写入操作，增加持有时间，更容易暴露竞态条件
-                static_cast<char*>(ptr)[0] = 'X'; 
-                
-                // 立即释放
-                heap.releaseChunk(ptr, kChunkSize);
-            } else {
-                // 如果 mmap 失败 (OOM)，在测试中视为错误
-                ADD_FAILURE() << "Allocation failed during concurrency test";
+            if (p == nullptr) {
+                // 这种情况下通常是 mmap 失败 (OOM)，单测中不应发生
+                continue;
             }
+
+            // 2. 模拟使用 (写入 dirty 数据，增加 CPU 停留时间，触发竞争)
+            std::memset(p, 0xCC, 4096); 
+
+            // 3. 归还
+            CentralHeap::GetInstance().returnChunk(p);
+            
+            success_count++;
         }
     };
 
-    std::vector<std::thread> threads;
-    for (int i = 0; i < thread_count; ++i) {
-        threads.emplace_back(worker_task);
+    // 启动线程
+    for (int i = 0; i < kThreadCount; ++i) {
+        threads.emplace_back(thread_func);
     }
 
+    // 等待结束
     for (auto& t : threads) {
-        t.join();
+        if (t.joinable()) t.join();
     }
 
-    // 如果运行到这里没有 Crash，且没有 Sanitizer 报错，说明基本线程安全
+    // 验证
+    EXPECT_EQ(success_count, kThreadCount * kOpsPerThread) 
+        << "Not all operations completed successfully.";
+    
+    // 还能运行到这里，说明没有发生 Deadlock
+    // 此时堆的状态应该是平衡的 (或者有些缓存残留)，但不应崩溃
 }

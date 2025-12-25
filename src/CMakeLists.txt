@@ -3,22 +3,16 @@
 # 将 calculator.cpp 编译成一个名为 "mylib" 的静态库
 add_library(mylib STATIC
     # CentralHeap 相关
-    gc_malloc/CentralHeap/AlignedChunkAllocatorByMmap.cpp
-    gc_malloc/CentralHeap/FreeChunkListCache.cpp
-    gc_malloc/CentralHeap/CentralHeap.cpp
+    TierAlloc/CentralHeap/ChunkFreelist.cpp
+    TierAlloc/CentralHeap/SystemChunkAllocator.cpp
+    TierAlloc/CentralHeap/CentralHeap.cpp
 
-    # ThreadHeap 相关
-    gc_malloc/ThreadHeap/ThreadHeap.cpp
-    gc_malloc/ThreadHeap/SizeClassPoolManager.cpp
-    gc_malloc/ThreadHeap/MemSubPool.cpp
-    gc_malloc/ThreadHeap/MemSubPoolList.cpp
-    gc_malloc/ThreadHeap/ManagedList.cpp
-    gc_malloc/ThreadHeap/BlockHeader.cpp
-    gc_malloc/ThreadHeap/SizeClassConfig.cpp
-    gc_malloc/ThreadHeap/Bitmap.cpp
+    TierAlloc/ThreadHeap/ChunkMetadata.cpp
+
 )
 
 # 头文件目录（公开给依赖 mylib 的目标）
 target_include_directories(mylib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include/TierAlloc
 )
