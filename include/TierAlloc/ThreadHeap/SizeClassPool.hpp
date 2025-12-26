@@ -18,9 +18,11 @@ public:
     [[nodiscard]] uint32_t getBlockSize() const { return block_size_; }
 
 public:
-    explicit SizeClassPool(size_t block_size, ThreadChunkCache* thread_chunk_cache)
-        : block_size_(block_size), thread_chunk_cache_(thread_chunk_cache){
-        assert(block_size >= sizeof(void*));
+    SizeClassPool() = default; 
+
+    void Init(size_t block_size, ThreadChunkCache* cache) {
+        block_size_ = block_size;
+        thread_chunk_cache_ = cache;
     }
 
     ~SizeClassPool();

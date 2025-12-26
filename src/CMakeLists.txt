@@ -9,6 +9,7 @@ add_library(mylib STATIC
 
     TierAlloc/ThreadHeap/Slab.cpp
     TierAlloc/ThreadHeap/SizeClassPool.cpp
+    TierAlloc/ThreadHeap/ThreadHeap.cpp
 
     TierAlloc/common/SizeClassConfig.cpp
 

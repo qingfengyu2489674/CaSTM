@@ -1,4 +1,5 @@
 #include "common/SizeClassConfig.hpp"
+#include <cstdint>
 #include <mutex>
 #include <cassert>
 
@@ -41,7 +42,7 @@ void SizeClassConfig::Init() {
     });
 }
 
-size_t SizeClassConfig::SizeToClass(size_t nbytes) noexcept {
+uint32_t SizeClassConfig::SizeToClass(size_t nbytes) noexcept {
     // 0. 异常/边界处理
     if (nbytes <= kMinAlloc) return 0; // 0-8 bytes -> index 0
     if (nbytes > kMaxAlloc) return kClassCount; // Out of bounds
@@ -70,7 +71,7 @@ size_t SizeClassConfig::SizeToClass(size_t nbytes) noexcept {
         }
     }
 
-    return static_cast<size_t>(left);
+    return static_cast<uint32_t>(left);
 }
 
 size_t SizeClassConfig::ClassToSize(size_t class_idx) noexcept {

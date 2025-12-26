@@ -2,6 +2,7 @@
 
 #include "common/GlobalConfig.hpp"
 #include <cstddef>
+#include <cstdint>
 
 
 class SizeClassConfig {
@@ -18,7 +19,7 @@ public:
 public:
     static void Init();
 
-    [[nodiscard]] static size_t SizeToClass(size_t nbytes) noexcept;
+    [[nodiscard]] static uint32_t SizeToClass(size_t nbytes) noexcept;
     [[nodiscard]] static size_t ClassToSize(size_t class_idx) noexcept;
     [[nodiscard]] static size_t Normalize(size_t nbytes) noexcept;
 
