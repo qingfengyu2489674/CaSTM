@@ -24,3 +24,8 @@ constexpr size_t kMaxCentralCacheSize = 64;
 
 // 缓存行大小
 inline constexpr size_t kCacheLineSize = 64;
+
+
+constexpr size_t kMaxPoolRescueChecks = 4;
+
+constexpr size_t kMaxThreadCacheSize = 8;

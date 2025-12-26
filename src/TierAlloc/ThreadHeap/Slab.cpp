@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 
 
@@ -98,6 +99,17 @@ void* Slab::allocFromBump_() {
     bump_ptr_ += block_size_;
     allocated_count_++;
     return ptr;
+}
+
+void Slab::DestroyForReuse() {
+#ifdef NDEBUG
+    // 在 Release 模式下，只清理最危险的指针，性能开销最小
+    this->owner_ = nullptr; 
+#else
+    // 在 Debug 模式下，用“毒药”值填充整个元数据区，
+    constexpr size_t head_size = (sizeof(Slab) + kCacheLineSize - 1) & ~(kCacheLineSize - 1);
+    memset(this, 0xDE, head_size); // 0xDEADBEEF...
+#endif
 }
 
 uint32_t Slab::block_size() const {

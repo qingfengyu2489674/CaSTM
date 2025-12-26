@@ -9,11 +9,18 @@ class SizeClassPool;
 struct alignas(kCacheLineSize) Slab {
 public:
     static Slab* CreateAt(void* chunk_start, SizeClassPool* pool, uint32_t  block_size);
+    
+    [[nodiscard]] static inline Slab* GetSlab(void* ptr) {
+        return reinterpret_cast<Slab*>(
+            reinterpret_cast<uintptr_t>(ptr) & kChunkMask
+        );
+    }
 
     [[nodiscard]] void* allocate();
     bool freeLocal(void* ptr);
     void freeRemote(void* ptr);
     uint32_t reclaimRemoteMemory();
+    void DestroyForReuse();
     
     [[nodiscard]] uint32_t block_size() const;
     [[nodiscard]] uint32_t max_block_count() const;
