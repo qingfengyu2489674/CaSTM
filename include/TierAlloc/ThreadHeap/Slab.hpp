@@ -13,7 +13,7 @@ public:
     [[nodiscard]] void* allocate();
     bool freeLocal(void* ptr);
     void freeRemote(void* ptr);
-    uint32_t reclaim_remote_memory();
+    uint32_t reclaimRemoteMemory();
     
     [[nodiscard]] uint32_t block_size() const;
     [[nodiscard]] uint32_t max_block_count() const;
@@ -28,6 +28,8 @@ public:
 
 private:
     Slab() = default;
+    void* allocFromList_();
+    void* allocFromBump_();
 
     void* local_free_list_ = nullptr;
 

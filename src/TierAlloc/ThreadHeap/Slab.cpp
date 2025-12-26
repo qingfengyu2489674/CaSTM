@@ -26,28 +26,25 @@ Slab* Slab::CreateAt(void *chunk_start, SizeClassPool *pool, uint32_t block_size
     size_t avail_bytes = kChunkSize - head_size;
     meta->max_block_count_ = static_cast<uint32_t>(avail_bytes / block_size);
 
+    meta->allocated_count_ = 0;
+    meta->local_free_list_ = nullptr;
+
     return meta;
 }
 
 [[nodiscard]] void* Slab::allocate() {
     if(local_free_list_ != nullptr) {
-        void* ptr = local_free_list_;
-        local_free_list_ = *reinterpret_cast<void**>(ptr);
-        
-        allocated_count_++;
-        return ptr;
+        return allocFromList_();
     }
 
+    if (!remote_free_list_.empty()) {
+        if(reclaimRemoteMemory() > 0) {
+            return allocFromList_();
+        }
+    }
+    
     if(bump_ptr_ + block_size_ <= end_ptr_) {
-        void* ptr = static_cast<void*>(bump_ptr_);
-        bump_ptr_ += block_size_;
-
-        allocated_count_++;
-        return ptr;
-    }
-
-    if(reclaim_remote_memory() > 0) {
-        return allocate();
+        return allocFromBump_();
     }
 
     return nullptr;
@@ -67,7 +64,7 @@ void Slab::freeRemote(void* ptr) {
     remote_free_list_.push(ptr);
 }
 
-uint32_t Slab::reclaim_remote_memory() {
+uint32_t Slab::reclaimRemoteMemory() {
     void* head = remote_free_list_.steal_all();
     if(head == nullptr)
         return 0;
@@ -87,6 +84,20 @@ uint32_t Slab::reclaim_remote_memory() {
     allocated_count_ -= count;
 
     return count;
+}
+
+void* Slab::allocFromList_() {
+    void* ptr = local_free_list_;
+    local_free_list_ = *reinterpret_cast<void**>(ptr);
+    allocated_count_++;
+    return ptr;
+}
+
+void* Slab::allocFromBump_() {
+    void* ptr = static_cast<void*>(bump_ptr_);
+    bump_ptr_ += block_size_;
+    allocated_count_++;
+    return ptr;
 }
 
 uint32_t Slab::block_size() const {

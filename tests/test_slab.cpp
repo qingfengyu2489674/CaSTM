@@ -124,7 +124,7 @@ TEST_F(ChunkMetadataTest, RemoteFreeAndReclaim) {
     EXPECT_EQ(meta->allocated_count(), 2);
 
     // 手动触发回收
-    uint32_t reclaimed = meta->reclaim_remote_memory();
+    uint32_t reclaimed = meta->reclaimRemoteMemory();
     
     // 验证回收结果
     EXPECT_EQ(reclaimed, 1);

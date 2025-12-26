@@ -36,6 +36,10 @@ public:
     [[nodiscard]] void* steal_all() noexcept {
         return head_.exchange(nullptr, std::memory_order_acq_rel);
     }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return head_.load(std::memory_order_relaxed) == nullptr;
+    }
 private:
     std::atomic<Node*> head_{nullptr};
 };
