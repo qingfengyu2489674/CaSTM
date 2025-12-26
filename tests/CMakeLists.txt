@@ -8,6 +8,7 @@ add_executable(run_tests
     test_SizeClassPool.cpp
     test_SizeClassConfig.cpp
     test_ThreadHeap.cpp
+    test_EBRManager.cpp
 )
 
 # 2. 链接库：业务库 + GoogleTest

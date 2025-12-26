@@ -3,15 +3,14 @@
 #include <vector>
 #include <atomic>
 #include <memory>
-#include <mutex>
+#include <mutex> // 确保包含了 mutex
 
-#include "Tool/ShmMutexLock.hpp"
 #include "EBRManager/LockFreeReuseStack.hpp"
 #include "EBRManager/ThreadSlot.hpp"
 #include "EBRManager/ThreadHeapAllocator.hpp"
 
 #include <cstddef>
-#include "gc_malloc/ThreadHeap/ThreadHeap.hpp"
+#include "TierAlloc/ThreadHeap/ThreadHeap.hpp"
 
 namespace detail {
 
@@ -85,19 +84,19 @@ private:
     LockFreeReuseStack<ThreadSlot> free_slots_;
     SegmentVector segments_;
     std::atomic<size_t> capacity_;
-    mutable ShmMutexLock resize_lock_;
+    
+    // 修改处 1: 将 ShmMutexLock 改为 std::mutex
+    mutable std::mutex resize_lock_;
 };
-
 
 
 template<typename Callable>
 void ThreadSlotManager::forEachSlot(Callable func) const {
+    // 修改处 2: 使用 std::lock_guard 配合 std::mutex
     // 加锁以确保在遍历期间 segments_ 向量不会被其他线程修改（例如扩容）。
-    // 这提供了一个稳定的、一致的快照视图。
-    std::lock_guard<ShmMutexLock> lock(resize_lock_);
+    std::lock_guard<std::mutex> lock(resize_lock_);
 
     // 遍历每一个内存段 (Segment)
-    // 注意：这里的拼写遵循了您的代码，但建议改为 segments_
     for (const auto& segment : segments_) {
         const ThreadSlot* slots_array = segment.get();
         const size_t count = segment.get_deleter().count;

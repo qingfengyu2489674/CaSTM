@@ -2,9 +2,8 @@
 
 #include <mutex>
 
-#include "Tool/ShmMutexLock.hpp"
 #include "EBRManager/GarbageNode.hpp"
-#include "gc_malloc/ThreadHeap/ThreadHeap.hpp"
+#include "TierAlloc/ThreadHeap/ThreadHeap.hpp"
 
 /**
  * @class GarbageCollector
@@ -30,7 +29,8 @@ public:
     void collect(Node* garbage_list_head);
 
 private:
-    mutable ShmMutexLock lock_;
+    // 修改处 1: 将 ShmMutexLock 改为 std::mutex
+    mutable std::mutex lock_;
 };
 
 
@@ -40,7 +40,8 @@ inline void GarbageCollector::collect(Node* garbage_list_head) {
         return;
     }
 
-    std::lock_guard<ShmMutexLock> lock(lock_);
+    // 修改处 2: 使用 std::lock_guard 配合 std::mutex
+    std::lock_guard<std::mutex> lock(lock_);
 
     Node* current = garbage_list_head;
     while (current != nullptr) {

@@ -13,6 +13,11 @@ add_library(mylib STATIC
 
     TierAlloc/common/SizeClassConfig.cpp
 
+    EBRManager/EBRManager.cpp
+    EBRManager/GarbageNode.cpp
+    EBRManager/LockFreeSingleLinkedList.cpp
+    EBRManager/ThreadSlot.cpp
+    EBRManager/ThreadSlotManager.cpp
 )
 
 # 头文件目录（公开给依赖 mylib 的目标）

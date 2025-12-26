@@ -1,10 +1,9 @@
 #pragma once
 
 #include <cstddef> // For size_t
-#include <new>     // For placement new
 
 // 包含了这个分配器唯一依赖的底层内存管理器
-#include "gc_malloc/ThreadHeap/ThreadHeap.hpp"
+#include "TierAlloc/ThreadHeap/ThreadHeap.hpp"
 
 // ====================================================================
 //    一个专用的、符合C++标准的、直接使用ThreadHeap的分配器

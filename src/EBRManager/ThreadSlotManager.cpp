@@ -40,7 +40,8 @@ ThreadSlot* ThreadSlotManager::acquireSlot_() {
 }
 
 ThreadSlot* ThreadSlotManager::expandAndAcquire() {
-    std::lock_guard<ShmMutexLock> lock(resize_lock_);
+    // 修改处：使用 std::mutex 对应的锁保护
+    std::lock_guard<std::mutex> lock(resize_lock_);
 
     ThreadSlot* slot = free_slots_.pop();
     if(slot) {

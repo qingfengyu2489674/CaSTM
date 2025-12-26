@@ -7,7 +7,7 @@
 #include "EBRManager/GarbageCollector.hpp"
 #include "EBRManager/GarbageNode.hpp"
 #include "EBRManager/LockFreeSingleLinkedList.hpp"
-#include "gc_malloc/ThreadHeap/ThreadHeap.hpp"
+#include "TierAlloc/ThreadHeap/ThreadHeap.hpp"
 
 class EBRManager {
 public:
