@@ -9,6 +9,9 @@ add_executable(run_tests
     test_SizeClassConfig.cpp
     test_ThreadHeap.cpp
     test_EBRManager.cpp
+
+    MVOSTM/test_datatypes.cpp
+    MVOSTM/test_TransactionContext.cpp
 )
 
 # 2. 链接库：业务库 + GoogleTest
