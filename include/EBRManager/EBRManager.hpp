@@ -2,10 +2,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include "EBRManager/ThreadSlotManager.hpp"
 #include "EBRManager/GarbageCollector.hpp"
-#include "EBRManager/GarbageNode.hpp"
 #include "EBRManager/LockFreeSingleLinkedList.hpp"
 #include "TierAlloc/ThreadHeap/ThreadHeap.hpp"
 
@@ -19,11 +19,17 @@ public:
     EBRManager(const EBRManager&&) = delete;
     EBRManager& operator=(const EBRManager&&) = delete;
 
+    static EBRManager* getInstance() {
+        static EBRManager instance;
+        return &instance;
+    }
+
     void enter();
     void leave();
 
     template<typename T>
     void retire(T* ptr);
+    void retire(void* ptr, void (*deleter)(void*));
 
 public:
     static constexpr size_t kNumEpochLists = 3;
@@ -48,15 +54,11 @@ void EBRManager::retire(T* ptr) {
         return;
     }
     
-    auto deleter = [](void* p) {
+    auto default_deleter = [](void* p) {
         T* typed_p   = static_cast<T*>(p);
         typed_p->~T();
         ThreadHeap::deallocate(typed_p);
     };
 
-    void* gnode_mem = ThreadHeap::allocate(sizeof(GarbageNode));
-    GarbageNode* g_node = new(gnode_mem) GarbageNode(ptr, deleter);
-
-    uint64_t current_epoch = global_epoch_.load(std::memory_order_relaxed);
-    this->garbage_lists_[current_epoch % kNumEpochLists].pushNode(g_node);
+    this->retire(static_cast<void*>(ptr), default_deleter);
 }

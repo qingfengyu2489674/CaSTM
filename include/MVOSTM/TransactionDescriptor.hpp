@@ -1,14 +1,22 @@
 #pragma once
 
-
+#include <cstddef>
 #include <cstdint>
 #include <vector>
+
+struct ReadLogEntry {
+    const void* tmvar_addr;
+
+    using Validator = bool (*)(const void* tmvar_addr, uint64_t rv);
+    Validator validator;
+};
+
 
 struct WriteLogEntry {
     void* tmvar_addr;   // 锁对象地址（TMVar的指针）
     void* new_node;     // 擦除掉类型信息的新节点
 
-    using Committer = void (*)(void* tmvar, void* node, uint64_t commit_ts);
+    using Committer = void (*)(void* tmvar, void* node, uint64_t write_ts);
     Committer committer;
 
     using Deleter = void (*)(void* node);
@@ -23,9 +31,12 @@ public:
         Aborted
     };
 
+    static constexpr size_t kDefaultCapacity = 16;
+
     TransactionDescriptor() {
-        read_set_.reserve(64);
-        write_set_.reserve(16);
+        read_set_.reserve(kDefaultCapacity * 4);
+        write_set_.reserve(kDefaultCapacity);
+        lock_set_.reserve(kDefaultCapacity); 
     }
 
     ~TransactionDescriptor() {
@@ -35,23 +46,26 @@ public:
     void reset() {
         state_ = State::Active;
         read_version_ = 0;
+
         read_set_.clear();
+        lock_set_.clear(); 
         clearWriteSet_();
     }
 
     void setReadVersion(uint64_t rv) { read_version_ = rv; }
     uint64_t getReadVersion() const { return read_version_; }
 
-    void addToReadSet(const void* addr) {
-        read_set_.push_back(addr);
+    void addToReadSet(const void* addr, ReadLogEntry::Validator v) {
+        read_set_.push_back({addr, v});
     }
 
     void addToWriteSet(void* addr, void* new_node, WriteLogEntry::Committer c, WriteLogEntry::Deleter d) {
         write_set_.push_back({addr, new_node, c, d});
     }
 
-    const std::vector<const void*>& readSet() const { return read_set_; }
+    const std::vector<ReadLogEntry>& readSet() const { return read_set_; }
     std::vector<WriteLogEntry>& writeSet() { return write_set_; }
+    std::vector<void*>& lockSet() { return lock_set_; }
 
 private:
     void clearWriteSet_() {
@@ -66,6 +80,7 @@ private:
 private:
     State state_{State::Active};
     uint64_t read_version_{0};
-    std::vector<const void*> read_set_;
+    std::vector<ReadLogEntry> read_set_;
     std::vector<WriteLogEntry> write_set_;
+    std::vector<void*> lock_set_; 
 };
