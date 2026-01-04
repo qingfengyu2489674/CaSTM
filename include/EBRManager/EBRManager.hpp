@@ -11,9 +11,6 @@
 
 class EBRManager {
 public:
-    EBRManager();
-    ~EBRManager();
-
     EBRManager(const EBRManager&) = delete;
     EBRManager& operator=(const EBRManager&) = delete;
     EBRManager(const EBRManager&&) = delete;
@@ -35,6 +32,8 @@ public:
     static constexpr size_t kNumEpochLists = 3;
 
 private:
+    EBRManager();
+    ~EBRManager();
     bool tryAdvanceEpoch_();
     void collectGarbage_(uint64_t epoch_to_collect);
     ThreadSlot* getLocalSlot_();

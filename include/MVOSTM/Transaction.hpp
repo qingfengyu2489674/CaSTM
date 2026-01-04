@@ -63,37 +63,44 @@ inline void Transaction::begin() {
 //     throw RetryException(); 
 // }
 
+// include/Transaction.hpp
 
 template<typename T>
 T Transaction::load(TMVar<T>& var) {
     using Node = typename TMVar<T>::Node;
     
-    // 1. 先查 WriteSet (Read-Your-Own-Writes)
+    // 1. Read-Your-Own-Writes (查写集)
     auto& wset = desc_->writeSet();
     for(auto it = wset.rbegin(); it != wset.rend(); ++it) {
         if(it->tmvar_addr == &var) return static_cast<Node*>(it->new_node)->payload;
     }
     
-    // 2. 查 ReadSet (优化：如果已经读过，直接返回之前的结果？)
-    // 这一步对于正确性不是必须的，但对于性能有帮助。
-    // 为简单起见，这里保持标准逻辑：从内存读取。
-    
+    // 2. Direct Read (读取内存)
     auto* curr = var.loadHead();
+
+    // 3. 【核心补丁】Load-Time Lock Check
+    // TL2 要求：读取时必须确保变量未被锁定。
+    // 既然它不在我的 WriteSet 里，如果它被锁了，那一定是别人锁的。
+    // 读一个被锁的变量是危险的，必须重试。
+    if (StripedLockTable::instance().is_locked(&var)) {
+        throw RetryException();
+    }
+
+    // 4. Register Validation (加入读集)
     desc_->addToReadSet(&var, TMVar<T>::validate);
 
-    // 3. 遍历版本链
-    while (curr != nullptr) {
-        // 找到可见版本
-        if(curr->write_ts <= desc_->getReadVersion()) {
-            return curr->payload;
-        }
-        curr = curr->prev;
+    // 5. Strict Version Check (禁止读未来版本)
+    if (curr == nullptr || curr->write_ts > desc_->getReadVersion()) {
+        throw RetryException(); 
     }
     
-    // 4. 【关键修复】如果遍历完链表都没找到可见版本 (curr == nullptr)
-    // 说明所有版本都比我的 RV 新，或者历史版本已经被剪枝。
-    // 必须中止事务！
-    throw RetryException(); 
+    // (可选) 为了极其严格的正确性，可以在读完 Version 后再查一次锁 (Post-Read Lock Check)
+    // 但在大多数实现中，上面的 Pre-Read Lock Check 加上 Commit 时的验证已经足够达到 100% 正确率。
+    if (StripedLockTable::instance().is_locked(&var)) {
+         throw RetryException();
+    }
+
+    return curr->payload;
 }
 
 
@@ -138,33 +145,57 @@ inline bool Transaction::commit() {
     desc_->reset();
     return true;
 }
+// include/Transaction.hpp
+
+// 必须包含头文件
+#include <atomic> 
+
+// ...
 
 inline bool Transaction::validateReadSet() {
     uint64_t rv = desc_->getReadVersion();
     auto& lock_table = StripedLockTable::instance();
-    auto& wset = desc_->writeSet();
+    auto& locks = desc_->lockSet(); // 我持有的锁
 
     for(const auto& entry : desc_->readSet()) {
+        // ==========================================================
+        // STEP 1: 前置锁检查 (Pre-Check)
+        // 确保读之前没人锁
+        // ==========================================================
         if(lock_table.is_locked(entry.tmvar_addr)){
-            // 判断是否是自己锁的
-            bool locked_by_me = false;
-            auto& locks = desc_->lockSet();
-
-            if(std::binary_search(locks.begin(), locks.end(), entry.tmvar_addr)){
-                locked_by_me = true;
-            }
-
-            if(!locked_by_me) {
-                return false;
-            }
+            // 如果被锁了，除非是我自己锁的，否则 Abort
+            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), entry.tmvar_addr);
+            if(!locked_by_me) return false;
         }
 
+        // ==========================================================
+        // STEP 2: 版本/数据校验 (Value Check)
+        // 读取内存中的 VersionNode
+        // ==========================================================
         if(!entry.validator(entry.tmvar_addr, rv)) {
             return false;
+        }
+
+        // ==========================================================
+        // STEP 3: 【关键修复】内存屏障 (Memory Fence)
+        // 强制 CPU 和编译器：必须先完成上面的 STEP 2 (读数据)，
+        // 才能执行下面的 STEP 4 (读锁状态)。
+        // 防止指令重排导致的 "ABA" 漏判。
+        // ==========================================================
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        // ==========================================================
+        // STEP 4: 后置锁检查 (Post-Check / Double-Check)
+        // 确保读的过程中，没有别的线程偷偷加了锁
+        // ==========================================================
+        if(lock_table.is_locked(entry.tmvar_addr)){
+            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), entry.tmvar_addr);
+            if(!locked_by_me) return false;
         }
     }
     return true;
 }
+
 
 inline void Transaction::lockWriteSet() {
     auto& wset = desc_->writeSet();
