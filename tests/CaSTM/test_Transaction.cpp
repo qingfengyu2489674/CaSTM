@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "MVOSTM/Transaction.hpp"
+#include "CaSTM/Transaction.hpp"
 
 // 假设这些组件已经正确实现并链接
 // 如果 StripedLockTable 的实现包含在 .cpp 中，请确保链接

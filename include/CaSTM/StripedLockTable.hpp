@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <vector>
 #include <thread>
 #include <functional>
 #include <immintrin.h> // for _mm_pause

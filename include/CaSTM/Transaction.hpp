@@ -25,6 +25,12 @@ public:
     template<typename T>
     void store(TMVar<T>& var, const T& val);
 
+    template<typename T, typename... Args>
+    T* alloc(Args&&... args);
+
+    template<typename T>
+    void free(T* ptr);
+
 private:
     bool validateReadSet();
     void lockWriteSet();
@@ -54,11 +60,6 @@ T Transaction::load(TMVar<T>& var) {
         }
     }
 
-    // 疑问之处
-    // if (StripedLockTable::instance().is_locked(&var)) {
-    //     throw RetryException();
-    // }
-
     auto* curr = var.loadHead();
 
     desc_->addToReadSet(&var, curr, TMVar<T>::validate);
@@ -73,12 +74,6 @@ T Transaction::load(TMVar<T>& var) {
         curr = curr->prev;
     }
     
-    // 疑问之处
-    // if (StripedLockTable::instance().is_locked(&var)) {
-    //     throw RetryException();
-    // }
-
-    // 找不到可见版本
     throw RetryException();    
 }
 
@@ -88,6 +83,28 @@ void Transaction::store(TMVar<T>& var, const T& val) {
     Node* node = new Node(0, nullptr, val);
 
     desc_->addToWriteSet(&var, node, TMVar<T>::committer, TMVar<T>::deleter);
+}
+
+
+template<typename T, typename... Args>
+T* Transaction::alloc(Args&&... args) {
+    // 1. 从 ThreadHeap 申请裸内存
+    void* raw_mem = ThreadHeap::allocate(sizeof(T));
+
+    // 2. 记录到 Descriptor，以此保证：如果不幸 Abort，这块内存会被归还
+    desc_->recordAllocation(raw_mem);
+
+    // 3. 原地构造 (Placement New)
+    return new(raw_mem) T(std::forward<Args>(args)...);
+}
+
+
+template<typename T>
+void Transaction::free(T* ptr) {
+    if (!ptr) return;
+
+    ptr->~T();
+    ThreadHeap::deallocate(ptr);
 }
 
 inline bool Transaction::commit() {
@@ -115,6 +132,7 @@ inline bool Transaction::commit() {
 
     unlockWriteSet();
 
+    desc_->commitAllocations(); 
     desc_->reset();
     return true;
 }

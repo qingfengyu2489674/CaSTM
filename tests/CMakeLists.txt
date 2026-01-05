@@ -10,11 +10,11 @@ add_executable(run_tests
     test_ThreadHeap.cpp
     test_EBRManager.cpp
 
-    MVOSTM/test_TMVar.cpp
+    CaSTM/test_TMVar.cpp
     # MVOSTM/test_TransactionDescriptor.cpp
-    MVOSTM/test_Transaction.cpp
-    MVOSTM/test_STM.cpp
-    MVOSTM/test_STM_Tree.cpp
+    CaSTM/test_Transaction.cpp
+    CaSTM/test_STM.cpp
+    CaSTM/test_STM_Tree.cpp
 )
 
 # 2. 链接库：业务库 + GoogleTest

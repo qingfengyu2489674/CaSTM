@@ -2,9 +2,9 @@
 #include <string>
 
 // 包含你的核心头文件
-#include "MVOSTM/TMVar.hpp"
+#include "CaSTM/TMVar.hpp"
 // VersionNode.hpp 通常被 TMVar 包含，但为了测试 detail 里的结构，也可以显式包含
-#include "MVOSTM/VersionNode.hpp"
+#include "CaSTM/VersionNode.hpp"
 
 namespace {
 

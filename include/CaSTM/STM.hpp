@@ -1,6 +1,6 @@
 #pragma once 
 
-#include "MVOSTM/TransactionDescriptor.hpp"
+#include "TransactionDescriptor.hpp"
 #include "Transaction.hpp"
 #include "TMVar.hpp"
 #include "EBRManager/EBRManager.hpp"

@@ -1,0 +1,234 @@
+#include <gtest/gtest.h>
+#include <thread>
+#include <vector>
+#include <algorithm>
+#include <random>
+#include <chrono>
+#include <iostream>
+#include <memory>
+
+// 确保包含你的 STM 头文件
+#include "CaSTM/STM.hpp"
+
+// ==========================================
+// 1. 定义树节点
+// ==========================================
+struct TreeNode {
+    int key;
+    STM::Var<TreeNode*> left;
+    STM::Var<TreeNode*> right;
+
+    TreeNode(int k) : key(k), left(nullptr), right(nullptr) {}
+};
+
+// ==========================================
+// 2. 树操作辅助类 (BST)
+// ==========================================
+class BST {
+public:
+    STM::Var<TreeNode*> root;
+
+    BST() : root(nullptr) {}
+
+    // 递归插入
+    // 注意：这里没有做平衡操作，纯 BST
+    void insert(Transaction& tx, STM::Var<TreeNode*>& currentVar, int key) {
+        TreeNode* curr = tx.load(currentVar);
+
+        // Case 1: 插入位置为空
+        if (curr == nullptr) {
+            // 【核心修改】：使用 tx.alloc 替代 new
+            // 这样 STM 会自动管理该内存的生命周期（如果事务 Abort 则自动释放）
+            TreeNode* newNode = tx.alloc<TreeNode>(key);
+            tx.store(currentVar, newNode);
+            return;
+        }
+
+        // Case 2: 键值已存在，不做任何事
+        if (key == curr->key) {
+            return;
+        } 
+        // Case 3: 递归向下
+        else if (key < curr->key) {
+            insert(tx, curr->left, key);
+        } else {
+            insert(tx, curr->right, key);
+        }
+    }
+
+    // 中序遍历 (验证有序性)
+    void inorder(Transaction& tx, STM::Var<TreeNode*>& currentVar, std::vector<int>& result) {
+        TreeNode* curr = tx.load(currentVar);
+        if (curr == nullptr) return;
+
+        inorder(tx, curr->left, result);
+        result.push_back(curr->key); // 访问根
+        inorder(tx, curr->right, result);
+    }
+
+    // 安全的垃圾回收收集器
+    // 在事务内将节点从树上摘除，并记录到 garbage 列表中
+    // 真正的 delete 操作在事务提交后执行
+    void collect_garbage(Transaction& tx, STM::Var<TreeNode*>& currentVar, std::vector<TreeNode*>& out) {
+        TreeNode* curr = tx.load(currentVar);
+        if (curr == nullptr) return;
+
+        // 递归收集子节点
+        collect_garbage(tx, curr->left, out);
+        collect_garbage(tx, curr->right, out);
+
+        // 收集当前节点
+        out.push_back(curr);
+        
+        // 从 STM 视角断开连接（置空）
+        tx.store<TreeNode*>(currentVar, nullptr);
+    }
+};
+
+class STMTreeTest : public ::testing::Test {};
+
+// ==========================================
+// 测试用例 1: 中等压力的并发插入
+// ==========================================
+TEST_F(STMTreeTest, ConcurrentInsert_MediumStress) {
+    BST tree;
+    
+    // 配置：中等压力
+    // 4 线程 x 100 节点 = 400 节点
+    // 既能保证发生冲突（尤其是在树的上层），又不至于卡死
+    const int NUM_THREADS = 4; 
+    const int ITEMS_PER_THREAD = 100; 
+    const int TOTAL_ITEMS = NUM_THREADS * ITEMS_PER_THREAD;
+
+    // 1. 准备数据：生成 0 ~ N-1 的不重复数字
+    std::vector<int> all_keys;
+    all_keys.reserve(TOTAL_ITEMS);
+    for (int i = 0; i < TOTAL_ITEMS; ++i) all_keys.push_back(i);
+
+    // 2. 随机打乱：防止树退化成链表，减少极端冲突
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(all_keys.begin(), all_keys.end(), g);
+
+    std::cout << "[INFO] Starting Medium Stress Test (" << NUM_THREADS << " threads, " << TOTAL_ITEMS << " items)..." << std::endl;
+
+    std::vector<std::thread> workers;
+    
+    // 3. 启动线程并发插入
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        workers.emplace_back([&, i]() {
+            int start = i * ITEMS_PER_THREAD;
+            int end = start + ITEMS_PER_THREAD;
+            
+            for (int k = start; k < end; ++k) {
+                // 每个插入操作都是一个原子事务
+                STM::atomically([&](Transaction& tx) {
+                    tree.insert(tx, tree.root, all_keys[k]);
+                });
+            }
+        });
+    }
+
+    // 4. 等待结束
+    for (auto& t : workers) {
+        t.join();
+    }
+    std::cout << "[INFO] Insertion Finished." << std::endl;
+
+    // 5. 验证结果
+    std::vector<int> result;
+    STM::atomically([&](Transaction& tx) {
+        tree.inorder(tx, tree.root, result);
+    });
+
+    // 验证大小
+    EXPECT_EQ(result.size(), TOTAL_ITEMS) << "Tree size mismatch! Likely Lost Update.";
+    
+    // 验证有序性 (BST 性质)
+    EXPECT_TRUE(std::is_sorted(result.begin(), result.end())) << "Tree structure corrupted (not sorted).";
+
+    // 6. 清理内存
+    std::vector<TreeNode*> garbage;
+    STM::atomically([&](Transaction& tx) {
+        garbage.clear(); // 关键：如果事务重试，必须清空上一轮收集的脏数据
+        tree.collect_garbage(tx, tree.root, garbage);
+    });
+    
+    // 【修改点】：在事务外安全删除，使用 tx.free
+    STM::atomically([&](Transaction& tx) {
+        for (auto* node : garbage) {
+            tx.free(node);
+        }
+    });
+}
+
+// ==========================================
+// 测试用例 2: 读写隔离 (Snapshot Isolation)
+// ==========================================
+TEST_F(STMTreeTest, ReaderWriterIsolation_Medium) {
+    BST tree;
+    std::atomic<bool> done{false};
+    
+    // 写线程插入 200 个节点
+    const int TOTAL_ITEMS = 200;
+
+    // 写线程：持续插入
+    std::thread writer([&]() {
+        // 使用乱序插入，避免 reader 总是读到极其不平衡的树
+        std::vector<int> keys(TOTAL_ITEMS);
+        for(int i=0; i<TOTAL_ITEMS; ++i) keys[i] = i * 2; // 偶数
+        
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(keys.begin(), keys.end(), g);
+
+        for (int val : keys) {
+            STM::atomically([&](Transaction& tx) {
+                tree.insert(tx, tree.root, val);
+            });
+            // 稍微让出一点时间片，给 reader 机会
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+        done = true;
+    });
+
+    // 读线程：持续读取全树快照
+    std::thread reader([&]() {
+        while (!done) {
+            std::vector<int> snapshot;
+            try {
+                STM::atomically([&](Transaction& tx) {
+                    snapshot.clear();
+                    tree.inorder(tx, tree.root, snapshot);
+                });
+                
+                // 验证快照一致性：
+                // 1. 必须有序
+                // 2. 即使 writer 正在修改，reader 读到的必须是某个时刻完整的树
+                if (!snapshot.empty()) {
+                    EXPECT_TRUE(std::is_sorted(snapshot.begin(), snapshot.end()));
+                }
+            } catch (...) {
+                // 忽略重试异常，继续下一次读取
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    writer.join();
+    reader.join();
+
+    // 清理
+    std::vector<TreeNode*> garbage;
+    STM::atomically([&](Transaction& tx) {
+        garbage.clear();
+        tree.collect_garbage(tx, tree.root, garbage);
+    });
+    
+    // 【修改点】：使用 tx.free 进行清理
+    STM::atomically([&](Transaction& tx) {
+        for (auto* node : garbage) {
+            tx.free(node);
+        }
+    });
+}

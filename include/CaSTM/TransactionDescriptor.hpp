@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ThreadHeap/ThreadHeap.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -41,10 +42,15 @@ public:
     }
 
     ~TransactionDescriptor() {
-        clearWriteSet_(); 
+        reset(); 
     }
 
     void reset() {
+        for (void* ptr : allocated_ptrs_) {
+            ThreadHeap::deallocate(ptr);
+        }
+        allocated_ptrs_.clear();
+
         state_ = State::Active;
         read_version_ = 0;
 
@@ -62,6 +68,14 @@ public:
 
     void addToWriteSet(void* addr, void* new_node, WriteLogEntry::Committer c, WriteLogEntry::Deleter d) {
         write_set_.push_back({addr, new_node, c, d});
+    }
+
+    void recordAllocation(void* ptr) {
+        allocated_ptrs_.push_back(ptr);
+    }
+
+    void commitAllocations() {
+        allocated_ptrs_.clear();
     }
 
     const std::vector<ReadLogEntry>& readSet() const { return read_set_; }
@@ -84,4 +98,6 @@ private:
     std::vector<ReadLogEntry> read_set_;
     std::vector<WriteLogEntry> write_set_;
     std::vector<void*> lock_set_; 
+
+    std::vector<void*> allocated_ptrs_; 
 };
