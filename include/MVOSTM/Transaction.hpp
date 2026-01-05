@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <vector>
+#include <atomic> 
 
 struct RetryException : public std::exception {};
 
@@ -54,13 +55,13 @@ T Transaction::load(TMVar<T>& var) {
     }
 
     // 疑问之处
-    if (StripedLockTable::instance().is_locked(&var)) {
-        throw RetryException();
-    }
+    // if (StripedLockTable::instance().is_locked(&var)) {
+    //     throw RetryException();
+    // }
 
     auto* curr = var.loadHead();
 
-    desc_->addToReadSet(&var, TMVar<T>::validate);
+    desc_->addToReadSet(&var, curr, TMVar<T>::validate);
     
     uint64_t rv = desc_->getReadVersion();
 
@@ -73,9 +74,9 @@ T Transaction::load(TMVar<T>& var) {
     }
     
     // 疑问之处
-    if (StripedLockTable::instance().is_locked(&var)) {
-        throw RetryException();
-    }
+    // if (StripedLockTable::instance().is_locked(&var)) {
+    //     throw RetryException();
+    // }
 
     // 找不到可见版本
     throw RetryException();    
@@ -121,26 +122,36 @@ inline bool Transaction::commit() {
 inline bool Transaction::validateReadSet() {
     uint64_t rv = desc_->getReadVersion();
     auto& lock_table = StripedLockTable::instance();
-    auto& locks = desc_->lockSet(); // 我持有的锁
+    auto& locks = desc_->lockSet(); // 这里面存的是 (void*)index
 
     for(const auto& entry : desc_->readSet()) {
-        // 前置锁检查 (Pre-Check)
+        // [Step 1] 前置锁检查
         if(lock_table.is_locked(entry.tmvar_addr)){
-            // 如果被锁了，除非是我自己锁的，否则 Abort
-            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), entry.tmvar_addr);
+            // 【修复关键点】必须先计算出地址对应的索引
+            size_t idx = lock_table.getStripeIndex(entry.tmvar_addr);
+            void* idx_ptr = reinterpret_cast<void*>(idx);
+
+            // 然后在 locks 列表中查找这个索引
+            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), idx_ptr);
+            
+            // 如果被锁了且不是我锁的 -> 冲突
             if(!locked_by_me) return false;
         }
 
-        if(!entry.validator(entry.tmvar_addr, rv)) {
+        // [Step 2] 身份 + 时间验证
+        if(!entry.validator(entry.tmvar_addr, entry.expected_head, rv)) {
             return false;
         }
 
-        // 强制 CPU 和编译器：必须先完成上面的 STEP 2 (读数据)，
+        // [Step 3] 内存屏障 & 后置锁检查
         std::atomic_thread_fence(std::memory_order_seq_cst);
 
-        // 确保读的过程中，没有别的线程偷偷加了锁
         if(lock_table.is_locked(entry.tmvar_addr)){
-            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), entry.tmvar_addr);
+            // 【修复关键点】同样的逻辑
+            size_t idx = lock_table.getStripeIndex(entry.tmvar_addr);
+            void* idx_ptr = reinterpret_cast<void*>(idx);
+
+            bool locked_by_me = std::binary_search(locks.begin(), locks.end(), idx_ptr);
             if(!locked_by_me) return false;
         }
     }
@@ -148,32 +159,44 @@ inline bool Transaction::validateReadSet() {
 }
 
 
+// Transaction.cpp 中:
+
 inline void Transaction::lockWriteSet() {
     auto& wset = desc_->writeSet();
-    auto& locks = desc_->lockSet();
-    locks.clear();
-    for(auto& entry : wset) locks.push_back(entry.tmvar_addr);
-
-    // 排序去重
-    std::sort(locks.begin(), locks.end());
-    auto last = std::unique(locks.begin(), locks.end());
-    locks.erase(last, locks.end());
-
+    auto& locks = desc_->lockSet(); 
+    
+    locks.clear(); // 这里现在存的是 (void*)index
+    
     auto& lock_table = StripedLockTable::instance();
-    for(void* addr : locks) {
-        lock_table.lock(addr);
+    
+    // 1. 获取所有索引
+    std::vector<size_t> indices;
+    indices.reserve(wset.size());
+    for(auto& entry : wset) {
+        indices.push_back(lock_table.getStripeIndex(entry.tmvar_addr));
     }
 
-}
+    // 2. 排序去重 (防止死锁的核心步骤)
+    std::sort(indices.begin(), indices.end());
+    auto last = std::unique(indices.begin(), indices.end());
+    indices.erase(last, indices.end());
 
+    // 3. 加锁
+    for(size_t idx : indices) {
+        lock_table.lockByIndex(idx);
+        // 保存索引以便解锁
+        locks.push_back(reinterpret_cast<void*>(idx));
+    }
+}
 
 inline void Transaction::unlockWriteSet() {
     auto& locks = desc_->lockSet();
     auto& lock_table = StripedLockTable::instance();
     
-    for (void* addr : locks) {
-        lock_table.unlock(addr);
+    for (auto it = locks.rbegin(); it != locks.rend(); ++it) {
+        size_t idx = reinterpret_cast<size_t>(*it);
+        lock_table.unlockByIndex(idx);
     }
+    locks.clear();
 }
-
 

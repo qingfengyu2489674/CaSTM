@@ -46,8 +46,8 @@ TEST(STMTest, ExceptionRollback) {
 TEST(STMTest, ConcurrentCounter) {
     STM::Var<int> counter(0);
     
-    const int NUM_THREADS = 8;
-    const int INC_PER_THREAD = 1000;
+    const int NUM_THREADS = 16;
+    const int INC_PER_THREAD = 2000;
 
     std::vector<std::thread> workers;
     
@@ -78,63 +78,240 @@ TEST(STMTest, ConcurrentCounter) {
     EXPECT_EQ(final_val, NUM_THREADS * INC_PER_THREAD);
 }
 
+// 定义链表节点结构
+// 注意：节点内的 next 指针必须被 STM::Var 包裹，这样才能被事务管理
+struct ListNode {
+    int val;
+    STM::Var<ListNode*> next;
 
-#include <gtest/gtest.h>
-#include <iostream>
-#include "MVOSTM/STM.hpp"
+    ListNode(int v) : val(v), next(nullptr) {}
+};
 
-// 这是一个手动控制事务步骤的测试
-// 目的：精确定位 Validate 为什么返回 True
-TEST(Debug, ReproduceLostUpdate) {
-    STM::Var<int> x(0);
+TEST(STMTest, ConcurrentOrderedList) {
+    // 链表头指针，也是一个受 STM 管理的变量
+    STM::Var<ListNode*> head(nullptr);
 
-    // 1. 准备两个事务上下文，模拟两个线程
-    TransactionDescriptor desc1;
-    Transaction tx1(&desc1);
+    // 配置：4个线程，每个线程插入50个节点（总量200个）
+    // 数量不宜过大，因为有序链表插入是 O(N^2) 操作，冲突率极高，重试会很频繁
+    const int NUM_THREADS = 4;
+    const int ITEMS_PER_THREAD = 50;
 
-    TransactionDescriptor desc2;
-    Transaction tx2(&desc2);
+    std::vector<std::thread> workers;
 
-    // 2. Tx1 开始事务
-    tx1.begin();
-    int r1 = tx1.load(x); 
-    EXPECT_EQ(r1, 0);
-    // 此时 Tx1 的 ReadVersion (RV) 假设为 T
+    // 启动线程
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        workers.emplace_back([&, i]() {
+            // 每个线程负责插入一系列特定的数字
+            // Thread 0: 0, 4, 8...
+            // Thread 1: 1, 5, 9...
+            // 这样可以保证插入的值唯一，且分布在链表不同位置
+            for (int j = 0; j < ITEMS_PER_THREAD; ++j) {
+                int val_to_insert = j * NUM_THREADS + i;
 
-    // 3. Tx2 开始事务 (在 Tx1 提交之前)
-    tx2.begin();
-    int r2 = tx2.load(x);
-    EXPECT_EQ(r2, 0);
-    // 此时 Tx2 的 RV 也为 T
+                STM::atomically([&](Transaction& tx) {
+                    // 1. 创建新节点 (本地堆内存，尚未共享)
+                    ListNode* new_node = new ListNode(val_to_insert);
 
-    // 4. Tx1 修改并提交 -> 成功
-    tx1.store(x, 100);
-    bool commit1 = tx1.commit();
-    EXPECT_TRUE(commit1);
-    
-    // Checkpoint: 此时 x 的内存中最新版本应该是 100，版本号 > T
-    // 我们可以作弊看一下 x 的内部状态（如果方便的话），或者通过原子读取验证
-    int current_val = STM::atomically([&](Transaction& tx){ return tx.load(x); });
-    EXPECT_EQ(current_val, 100);
+                    // 2. 寻找插入位置 (prev -> new_node -> curr)
+                    ListNode* prev = nullptr;
+                    ListNode* curr = tx.load(head);
 
-    // 5. 【关键步骤】Tx2 尝试修改并提交
-    // Tx2 读的时候是 0，现在内存是 100。
-    // 根据 TL2/MVCC 规则，Tx2 的 ReadSet 里的 x 已经过期了。
-    // 它的 Validate 必须失败！
-    tx2.store(x, 200);
-    
-    // 这一步如果返回 true，说明 Validate 逻辑有 BUG
-    bool commit2 = tx2.commit(); 
+                    while (curr != nullptr) {
+                        // 如果当前节点值大于待插入值，说明找到位置了
+                        if (curr->val > val_to_insert) {
+                            break;
+                        }
+                        prev = curr;
+                        // 【关键】读取下一个节点，这也需要通过 tx.load
+                        curr = tx.load(curr->next);
+                    }
 
-    if (commit2) {
-        std::cout << "\n[CRITICAL FAILURE] Tx2 committed successfully but should have failed!\n";
-        std::cout << "Reason: Tx2 read version " << desc2.getReadVersion() 
-                  << ", but x was updated by Tx1.\n";
-    } else {
-        std::cout << "\n[SUCCESS] Tx2 was correctly aborted.\n";
+                    // 3. 执行链接操作
+                    // 设置新节点的 next 指向 curr
+                    // 注意：这里 new_node 是私有的，可以直接初始化 next，
+                    // 但为了严谨，我们用 store 将其 next 指向 curr
+                    tx.store(new_node->next, curr);
+
+                    if (prev == nullptr) {
+                        // 插在头部
+                        tx.store(head, new_node);
+                    } else {
+                        // 插在中间/尾部
+                        tx.store(prev->next, new_node);
+                    }
+                });
+            }
+        });
     }
 
-    EXPECT_FALSE(commit2) << "Lost Update Reproduced: Tx2 overwrote Tx1's update without checking!";
+    // 等待所有插入完成
+    for (auto& t : workers) {
+        t.join();
+    }
+
+    // ==========================================
+    // 验证阶段 (Verify)
+    // ==========================================
+    
+    // 使用一个只读事务来遍历和验证整个链表
+    STM::atomically([&](Transaction& tx) {
+        ListNode* curr = tx.load(head);
+        int count = 0;
+        int last_val = -1;
+
+        while (curr != nullptr) {
+            // 1. 验证有序性 (Strictly Increasing)
+            if (curr->val <= last_val) {
+                // 如果发现乱序，说明之前的事务在插入时没“看清”前驱/后继的关系
+                ADD_FAILURE() << "List is NOT sorted! Found " << curr->val << " after " << last_val;
+            }
+            last_val = curr->val;
+            
+            // 2. 计数
+            count++;
+            
+            // 继续遍历
+            curr = tx.load(curr->next);
+        }
+
+        // 3. 验证完整性 (Lost Update Check)
+        // 如果少于预期，说明有插入事务被“覆盖”了
+        EXPECT_EQ(count, NUM_THREADS * ITEMS_PER_THREAD) 
+            << "List size mismatch! Possible Lost Insert.";
+    });
+
+    // 清理内存 (可选，防止 Valgrind/ASAN 报错)
+    // 实际生产环境通常依靠 EBR 或智能指针，这里手动清理简化演示
+    /*
+    STM::atomically([&](Transaction& tx) {
+        ListNode* curr = tx.load(head);
+        while (curr) {
+            ListNode* next = tx.load(curr->next);
+            delete curr;
+            curr = next;
+        }
+        tx.store(head, (ListNode*)nullptr);
+    });
+    */
+}
+
+// 定义树节点
+struct TreeNode {
+    int val;
+    STM::Var<TreeNode*> left;
+    STM::Var<TreeNode*> right;
+
+    TreeNode(int v) : val(v), left(nullptr), right(nullptr) {}
+};
+
+// 辅助函数：中序遍历验证 BST 性质和节点数量
+void inorder_traversal(Transaction& tx, TreeNode* node, std::vector<int>& result) {
+    if (!node) return;
+    
+    // 递归读取左子树
+    TreeNode* left_child = tx.load(node->left);
+    inorder_traversal(tx, left_child, result);
+    
+    // 访问当前节点
+    result.push_back(node->val);
+    
+    // 递归读取右子树
+    TreeNode* right_child = tx.load(node->right);
+    inorder_traversal(tx, right_child, result);
+}
+
+TEST(STMTest, ConcurrentBST) {
+    STM::Var<TreeNode*> root(nullptr);
+
+    // 配置：4线程，每线程插入 50 个节点
+    const int NUM_THREADS = 4;
+    const int ITEMS_PER_THREAD = 50; 
+    
+    std::vector<std::thread> workers;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        workers.emplace_back([&, i]() {
+            // 构造一些随机但唯一的数据
+            // 使用 (j * NUM_THREADS + i) 保证全局唯一
+            // 为了让树稍微平衡一点，不是纯粹的单调插入，我们可以对 j 进行一些变换
+            // 但为了简单起见，这里还是用简单的步长逻辑，STM 不关心树是否平衡
+            for (int j = 0; j < ITEMS_PER_THREAD; ++j) {
+                // 生成一个伪随机数，但保证唯一性
+                // 比如：(j * 4 + i) * 13 % (总数 * 10) ... 只要唯一即可
+                // 这里为了简单，依然使用间隔插入，这样不同线程会竞争不同的子树
+                int val_to_insert = i + j * NUM_THREADS; 
+
+                STM::atomically([&](Transaction& tx) {
+                    TreeNode* new_node = new TreeNode(val_to_insert);
+                    
+                    // 1. 处理根节点为空的情况
+                    TreeNode* curr = tx.load(root);
+                    if (curr == nullptr) {
+                        tx.store(root, new_node);
+                        return;
+                    }
+
+                    // 2. 寻找插入位置
+                    while (true) {
+                        if (val_to_insert < curr->val) {
+                            // 向左走
+                            TreeNode* left = tx.load(curr->left);
+                            if (left == nullptr) {
+                                // 找到位置，挂载
+                                tx.store(curr->left, new_node);
+                                break;
+                            }
+                            curr = left;
+                        } else {
+                            // 向右走
+                            TreeNode* right = tx.load(curr->right);
+                            if (right == nullptr) {
+                                // 找到位置，挂载
+                                tx.store(curr->right, new_node);
+                                break;
+                            }
+                            curr = right;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    for (auto& t : workers) {
+        t.join();
+    }
+
+    // ==========================================
+    // 验证阶段
+    // ==========================================
+    STM::atomically([&](Transaction& tx) {
+        std::vector<int> sorted_vals;
+        TreeNode* root_node = tx.load(root);
+        
+        // 收集所有节点值
+        inorder_traversal(tx, root_node, sorted_vals);
+
+        // 1. 验证数量 (是否有丢失更新)
+        EXPECT_EQ(sorted_vals.size(), NUM_THREADS * ITEMS_PER_THREAD)
+            << "Tree size mismatch! Lost updates detected.";
+
+        // 2. 验证顺序 (是否符合 BST 左小右大性质)
+        // 中序遍历 BST 得到的一定是严格递增序列
+        bool is_sorted = std::is_sorted(sorted_vals.begin(), sorted_vals.end());
+        EXPECT_TRUE(is_sorted) << "Tree does not maintain BST property!";
+        
+        // 额外检查是否有重复（STM 应该保证我们在逻辑中没插入重复值）
+        auto last = std::unique(sorted_vals.begin(), sorted_vals.end());
+        EXPECT_EQ(last, sorted_vals.end()) << "Duplicate values found in tree!";
+    });
+
+    // (可选) 内存清理
+    /*
+    STM::atomically([&](Transaction& tx) {
+        // BFS 或 DFS 删除所有节点... 略
+    });
+    */
 }
 
 // 标准 GTest 入口

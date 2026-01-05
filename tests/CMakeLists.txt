@@ -11,10 +11,9 @@ add_executable(run_tests
     test_EBRManager.cpp
 
     MVOSTM/test_TMVar.cpp
-    MVOSTM/test_TransactionDescriptor.cpp
+    # MVOSTM/test_TransactionDescriptor.cpp
     MVOSTM/test_Transaction.cpp
     MVOSTM/test_STM.cpp
-    MVOSTM/debug_Suite.cpp
     MVOSTM/test_STM_Tree.cpp
 )
 

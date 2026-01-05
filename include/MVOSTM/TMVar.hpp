@@ -22,7 +22,7 @@ public:
     static constexpr int MAX_HISTORY = 8;
 
     // 静态生命周期管理函数
-    static bool validate(const void* addr, uint64_t rv);
+    static bool validate(const void* addr, const void* expected_head, uint64_t rv);
     static void committer(void* tmvar_ptr, void* node_ptr, uint64_t wts);
     static void deleter(void* p);
 
@@ -62,15 +62,23 @@ typename TMVar<T>::Node* TMVar<T>::loadHead() const {
 }
 
 template<typename T>
-bool TMVar<T>::validate(const void* addr, uint64_t rv) {
+bool TMVar<T>::validate(const void* addr, const void* expected_head, uint64_t rv) {
     const auto* tmvar = static_cast<const TMVar<T>*>(addr);
-    auto* head = tmvar->loadHead();
+    
+    // 1. 获取当前 Head
+    auto* current_head = tmvar->loadHead();
 
-    // 情况1: 变量为空，没有冲突
-    if (head == nullptr) return true; 
+    // 2. 【身份检查】Head 被别人改过吗？
+    if (current_head != expected_head) {
+        return false; 
+    }
 
-    // 情况2: 严格的 TL2 验证
-    if (head->write_ts > rv) {
+    // 3. 【时间检查】Head 是不是“未来数据”？
+    // 如果 current_head 存在，且它的时间戳 > 我的开始时间(rv)
+    // 说明在我开始之后，这个变量已经被更新过了。
+    // 虽然此时指针没变(identity check passed)，但我读到的是它的祖先(旧值)。
+    // 如果我现在提交，就会覆盖掉 current_head 代表的新值。
+    if (current_head && current_head->write_ts > rv) {
         return false;
     }
     

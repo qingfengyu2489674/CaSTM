@@ -6,8 +6,9 @@
 
 struct ReadLogEntry {
     const void* tmvar_addr;
+    const void* expected_head;
 
-    using Validator = bool (*)(const void* tmvar_addr, uint64_t rv);
+    using Validator = bool (*)(const void* tmvar_addr, const void* expected_head, uint64_t rv);
     Validator validator;
 };
 
@@ -55,8 +56,8 @@ public:
     void setReadVersion(uint64_t rv) { read_version_ = rv; }
     uint64_t getReadVersion() const { return read_version_; }
 
-    void addToReadSet(const void* addr, ReadLogEntry::Validator v) {
-        read_set_.push_back({addr, v});
+    void addToReadSet(const void* addr, const void* head, ReadLogEntry::Validator v) {
+        read_set_.push_back({addr, head, v});
     }
 
     void addToWriteSet(void* addr, void* new_node, WriteLogEntry::Committer c, WriteLogEntry::Deleter d) {
