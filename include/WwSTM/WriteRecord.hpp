@@ -14,13 +14,13 @@ namespace detail {
 template<typename T>
 struct WriteRecord {
     TxDescriptor* owning_tx;    
-    VersionNode<T>* old_version;
-    VersionNode<T>* new_version;
+    VersionNode<T>* old_node;
+    VersionNode<T>* new_node;
 
     WriteRecord(TxDescriptor* tx, VersionNode<T>* old_v, VersionNode<T>* new_v)
         : owning_tx(tx)
-        , old_version(old_v)
-        , new_version(new_v)
+        , old_node(old_v)
+        , new_node(new_v)
     {}
 
     WriteRecord(const WriteRecord&) = delete;
