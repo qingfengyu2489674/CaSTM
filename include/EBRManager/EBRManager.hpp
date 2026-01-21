@@ -17,8 +17,8 @@ public:
     EBRManager& operator=(const EBRManager&&) = delete;
 
     static EBRManager* instance() {
-        static EBRManager instance;
-        return &instance;
+        static EBRManager* instance = new EBRManager();
+        return instance;
     }
 
     void enter();
