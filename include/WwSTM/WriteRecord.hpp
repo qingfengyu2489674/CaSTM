@@ -13,12 +13,12 @@ namespace detail {
 
 template<typename T>
 struct WriteRecord {
-    TxDescriptor* owning_tx;    
+    TxDescriptor* owner;    
     VersionNode<T>* old_node;
     VersionNode<T>* new_node;
 
     WriteRecord(TxDescriptor* tx, VersionNode<T>* old_v, VersionNode<T>* new_v)
-        : owning_tx(tx)
+        : owner(tx)
         , old_node(old_v)
         , new_node(new_v)
     {}

@@ -13,7 +13,7 @@ enum class TxStatus : uint8_t {
     ABORTED = 2     // 事务已回滚
 };
 
-struct TxstatusHelper {
+struct TxStatusHelper {
 
     // 尝试将状态从 ACTIVE 修改为 ABORTED (Wound-Wait 的核心)
     static bool tryAbort(std::atomic<TxStatus>& status_ref) {
