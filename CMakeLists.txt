@@ -30,3 +30,4 @@ add_subdirectory(third_party/googletest)
 # 4. 包含子目录
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(benchmarks)
