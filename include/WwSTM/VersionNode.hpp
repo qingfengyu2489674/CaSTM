@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <utility>
+#include "STM/Allocator.hpp"
 namespace STM {
 namespace Ww {
 
@@ -34,11 +35,11 @@ struct VersionNode {
     }
 
     static void* operator new(size_t size) {
-        return ::operator new(size);
+        return STM::Memory::wwAllocate(size);
     }
 
     static void operator delete(void* p) {
-        ::operator delete(p);
+        STM::Memory::wwDeallocate(p);
     }
 
 };

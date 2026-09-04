@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ThreadHeap/ThreadHeap.hpp"
+#include "STM/Allocator.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -50,7 +50,7 @@ public:
 
     void reset() {
         for (void* ptr : allocated_ptrs_) {
-            ThreadHeap::deallocate(ptr);
+            STM::Memory::occDeallocate(ptr);
         }
         allocated_ptrs_.clear();
 

@@ -30,11 +30,11 @@ struct WriteRecord {
     WriteRecord& operator=(const WriteRecord&) = delete;
 
     static void* operator new(size_t size) {
-        return ::operator new(size);
+        return STM::Memory::wwAllocate(size);
     }
 
     static void operator delete(void* p) {
-        ::operator delete(p);
+        STM::Memory::wwDeallocate(p);
     }
 
 #if STM_WW_TEST_HOOKS

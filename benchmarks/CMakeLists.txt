@@ -1,5 +1,22 @@
 find_package(Threads REQUIRED)
 
+# Keep the historical per-backend choices by default.  The ablation builds
+# configure the same target twice with -DSTM_ALLOCATOR_MODE=system and tier.
+set(STM_ALLOCATOR_MODE "native" CACHE STRING
+    "Allocator mode for the benchmark: native, system, or tier")
+set_property(CACHE STM_ALLOCATOR_MODE PROPERTY STRINGS native system tier)
+string(TOLOWER "${STM_ALLOCATOR_MODE}" STM_ALLOCATOR_MODE_NORMALIZED)
+if(STM_ALLOCATOR_MODE_NORMALIZED STREQUAL "native")
+    set(STM_ALLOCATOR_MODE_VALUE -1)
+elseif(STM_ALLOCATOR_MODE_NORMALIZED STREQUAL "system")
+    set(STM_ALLOCATOR_MODE_VALUE 0)
+elseif(STM_ALLOCATOR_MODE_NORMALIZED STREQUAL "tier")
+    set(STM_ALLOCATOR_MODE_VALUE 1)
+else()
+    message(FATAL_ERROR
+        "STM_ALLOCATOR_MODE must be native, system, or tier; got '${STM_ALLOCATOR_MODE}'")
+endif()
+
 add_executable(stm_benchmark
     stm_benchmark.cpp
 )
@@ -20,6 +37,7 @@ target_compile_definitions(stm_benchmark PRIVATE
     NDEBUG
     STM_WW_VERIFY_LOGIC_MODE=0
     STM_WW_TEST_HOOKS=0
+    STM_ALLOCATOR_MODE=${STM_ALLOCATOR_MODE_VALUE}
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
