@@ -104,8 +104,9 @@ python3 scripts/run_stm_benchmark.py \
   --smoke --warmup-ms 100 --measure-ms 300 --repetitions 1
 ```
 
-Full first matrix (host-truncated 1/2/4/8/16/32 thread points, six workload
-points, three repetitions):
+Full first matrix (the runner caps thread points to the host; on the recorded
+20-logical-CPU machine this is 1/2/4/8/16/20, six workload points, three
+repetitions):
 
 ```bash
 python3 scripts/run_stm_benchmark.py \
