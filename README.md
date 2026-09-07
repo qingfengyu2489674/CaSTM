@@ -1,4 +1,8 @@
+[![CI](https://github.com/ZephyrVia/CaSTM/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ZephyrVia/CaSTM/actions/workflows/ci.yml)
+
 # CaSTM
+
+**C++17 Software Transactional Memory Runtime**
 
 CaSTM 是一个 C++17 软件事务内存（STM）runtime 原型，用 MVCC、事务重试和
 基于 epoch 的安全回收，把并发读写组织成可组合的事务。项目实现了两条并发控制
