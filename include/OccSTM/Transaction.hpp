@@ -92,7 +92,7 @@ void Transaction::store(TMVar<T>& var, const T& val) {
 template<typename T, typename... Args>
 T* Transaction::alloc(Args&&... args) {
     // 使用线程堆分配内存，并做记录
-    void* raw_mem = ThreadHeap::allocate(sizeof(T));
+    void* raw_mem = STM::Memory::occAllocate(sizeof(T));
     desc_->recordAllocation(raw_mem);
     return new(raw_mem) T(std::forward<Args>(args)...);
 }
@@ -103,7 +103,7 @@ void Transaction::free(T* ptr) {
     if (!ptr) return;
 
     ptr->~T();
-    ThreadHeap::deallocate(ptr);
+    STM::Memory::occDeallocate(ptr);
 }
 
 } // namespace Occ
