@@ -1,0 +1,72 @@
+name: CaSTM CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mode-0-tests:
+    name: Build and test (WwSTM mode=0)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-mode0
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_FLAGS="-DSTM_WW_VERIFY_LOGIC_MODE=0"
+
+      - name: Build
+        run: cmake --build build-mode0 --target run_tests --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-mode0 --output-on-failure
+
+  verify-tests:
+    name: Build and test (VERIFY)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-verify
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-DSTM_WW_VERIFY_LOGIC_MODE=1"
+
+      - name: Build
+        run: cmake --build build-verify --target run_tests --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-verify --output-on-failure
+
+  asan-ubsan:
+    name: ASan and UBSan
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-asan-ubsan
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-g -O1 -fno-omit-frame-pointer
+          -fsanitize=address,undefined
+          -DSTM_WW_VERIFY_LOGIC_MODE=0"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build build-asan-ubsan --target run_tests --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-asan-ubsan --output-on-failure
